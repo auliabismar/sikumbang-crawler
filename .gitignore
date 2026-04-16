@@ -1,0 +1,14 @@
+# BMad and agent settings
+.agents/
+.kilocode/
+.opencode/
+_bmad/
+_bmad-output/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+venv/
