@@ -22,7 +22,7 @@ from state import (
 from export import export_to_csv
 
 BASE_URL = "https://sikumbang.tapera.go.id"
-TOTAL_PAGES = 50
+TOTAL_PAGES = 1849
 
 DELAY_BETWEEN_PAGES = 2
 MAX_RETRIES = 3
