@@ -22,8 +22,9 @@ from state import (
 from export import export_to_csv
 
 BASE_URL = "https://sikumbang.tapera.go.id"
-TOTAL_PAGES = 1848
-DELAY_BETWEEN_PAGES = 8
+TOTAL_PAGES = 50
+
+DELAY_BETWEEN_PAGES = 2
 MAX_RETRIES = 3
 
 
@@ -51,61 +52,75 @@ def parse_company_name(text: str) -> str:
 
 
 def extract_entries_from_page(page: Page) -> list:
-    entries = []
-    cards = page.locator('.card, [class*="card"]').all()
-    for card in cards:
-        try:
-            company_elem = card.locator("text=/\\(|company|name/i").first
-            if company_elem:
-                full_text = company_elem.inner_text()
-                company_name = parse_company_name(full_text)
-                detail_link = card.locator('text="Lihat detail lokasi"')
-                if detail_link.count() > 0:
-                    href = detail_link.get_attribute("href")
-                    if href:
-                        entries.append(
-                            {
-                                "company_name": company_name,
-                                "detail_url": href
-                                if href.startswith("http")
-                                else BASE_URL + href,
-                            }
-                        )
-        except Exception:
-            continue
+    entries = page.evaluate("""
+() => {
+    const entries = [];
+    const cards = document.querySelectorAll('.col-md-6.col-lg-4.col-sm-12.my-4');
+    cards.forEach(card => {
+        const h5 = card.querySelector('h5');
+        if (!h5) return;
+
+        const projectName = h5.textContent.trim();
+
+        const col12 = card.querySelector('.col-md-12');
+        if (!col12) return;
+
+        const spans = col12.querySelectorAll('span');
+        let companyName = '';
+        spans.forEach(span => {
+            const text = span.textContent.trim();
+            if (text && text.includes('(')) {
+                companyName = text.replace(/\\s*\\([^)]*\\)\\s*$/, '').trim();
+            }
+        });
+
+        const link = card.querySelector('a[href*="lokasi-perumahan"]');
+        if (!link) return;
+
+        entries.push({
+            project_name: projectName,
+            company_name: companyName,
+            detail_url: link.href
+        });
+    });
+    return entries;
+}
+""")
+    print(f"Found {len(entries)} entries")
     return entries
 
 
 def extract_detail_data(page: Page) -> dict:
     data = {"phone": None, "email": None, "website": None, "address": None}
     try:
-        kantor_section = page.locator("text=/kantor pemasaran/i")
-        if kantor_section.count() > 0:
-            section = kantor_section.first
-            content = section.inner_text()
-            email_match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", content)
-            if email_match:
-                data["email"] = email_match.group()
-            phone_match = re.search(r"\+?[\d\s\-()]{8,}", content)
-            if phone_match:
-                data["phone"] = phone_match.group()
-            links = section.locator('a[href*="http"]').all()
-            for link in links:
-                href = link.get_attribute("href")
-                if href:
-                    if (
-                        "website" in link.inner_text().lower()
-                        or ".com" in href
-                        or ".id" in href
-                    ):
-                        data["website"] = href
-                        break
-            address_text = (
-                content.split("Email")[0].split("Website")[0].split("Telepon")[1]
-                if "Telepon" in content
-                else content
-            )
-            data["address"] = address_text.strip()
+        kantor_heading = page.locator(
+            "h4:has-text('Kantor Pemasaran'), h5:has-text('Kantor Pemasaran')"
+        )
+        if kantor_heading.count() > 0:
+            heading = kantor_heading.first
+            parent = heading.locator("..").first
+            data_container = parent.locator("..").first
+
+            paragraphs = data_container.locator("p").all()
+            for p in paragraphs:
+                text = p.inner_text()
+                if "Telp" in text:
+                    match = re.search(r"[\d\s\-()]{8,}", text)
+                    if match:
+                        data["phone"] = match.group().strip()
+                elif "Email" in text:
+                    match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", text)
+                    if match:
+                        data["email"] = match.group()
+                elif "Website" in text:
+                    link = p.locator("a").first
+                    if link.count() > 0:
+                        href = link.get_attribute("href")
+                        if href and href != "http://":
+                            data["website"] = href
+                else:
+                    if text.strip() and not data["address"]:
+                        data["address"] = text.strip()
     except Exception as e:
         print(f"[detail] Error extracting data: {e}")
     return data
@@ -129,7 +144,7 @@ def process_entry(page: Page, entry: dict, seen_companies: set) -> bool:
                 website=detail_data.get("website"),
                 address=detail_data.get("address"),
             )
-            add_project(company_id, None, entry["detail_url"])
+            add_project(company_id, entry.get("project_name"), entry["detail_url"])
             return True
         except PlaywrightTimeout:
             retry_count += 1
@@ -148,23 +163,34 @@ def run():
     seen_companies = set(get_seen_companies())
     print(f"Starting from page {last_page + 1}")
     print(f"Companies already processed: {len(seen_companies)}")
-    check_robots_txt(None)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        check_robots_txt(browser)
         page = browser.new_page()
         page.set_default_timeout(30000)
         failed_this_run = []
+        page.goto(BASE_URL, timeout=30000)
+        page.wait_for_load_state("networkidle", timeout=20000)
+        page.wait_for_selector(".container", timeout=10000)
+        time.sleep(2)
         for page_num in range(last_page + 1, TOTAL_PAGES + 1):
             print(f"Processing page {page_num}/{TOTAL_PAGES}")
             retry_count = 0
             while retry_count < MAX_RETRIES:
                 try:
-                    url = f"{BASE_URL}/page/{page_num}" if page_num > 1 else BASE_URL
-                    page.goto(url, timeout=20000)
-                    page.wait_for_load_state("networkidle", timeout=15000)
-                    time.sleep(3)
+                    if page_num > 1:
+                        page.goto(f"{BASE_URL}/?page={page_num}", timeout=30000)
+                        page.wait_for_load_state("networkidle", timeout=30000)
+                        page.wait_for_selector(
+                            ".col-md-6.col-lg-4.col-sm-12.my-4", timeout=15000
+                        )
+                        time.sleep(2)
                     entries = extract_entries_from_page(page)
                     print(f"  Found {len(entries)} entries")
+                    for i, entry in enumerate(entries):
+                        print(
+                            f"  Processing entry {i + 1}/{len(entries)}: {entry['company_name']}"
+                        )
                     processed_companies = []
                     for entry in entries:
                         if process_entry(page, entry, seen_companies):

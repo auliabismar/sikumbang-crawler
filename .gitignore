@@ -12,3 +12,11 @@ _bmad-output/
 # Environment
 .env
 venv/
+
+.playwright-cli/
+.ruff_cache/
+
+leads.db
+leads_export.csv
+
+**/__pycache__/

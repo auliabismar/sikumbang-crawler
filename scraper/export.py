@@ -1,6 +1,6 @@
 import csv
 import os
-from scraper.db import get_all_companies
+from db import get_all_companies
 
 OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "..", "leads_export.csv")
 
